@@ -1,0 +1,602 @@
+---
+title: "Lab2"
+format: html
+editor: visual
+---
+
+## Analyzing the Socioeconomic and Environmental Conditions in a U.S. City
+
+[Directions, readings, and resources (link)](https://docs.google.com/document/d/1ZiTuOceE6OfCUY-4vJMkIuy559skx3Wt6PElalr30Yc/edit?usp=sharing)
+
+```{r}
+
+# Working with mySidewalk data in R
+# I created, explored, and read the data from the mySidewalk.  I named it DallasCity.geojson.
+
+# Now I want to load the libraries. 
+#install.packages(c("tidyverse","sf","tmap","viridis","RColorBrewer","units","geojson","ggspatial"))
+
+library(tidyverse) #for data wrangling/tidying, includes ggplot
+library(sf) #for working with spatial objects/geometries
+library(tmap) #an alternative to mapping with ggplot, easier to overlay different types of geo layers, some prefer for interactive mapping
+library(geojsonsf) #read in geojson files
+library(ggspatial) #for annotation on map layouts: legends, scale bars, labels
+library(units) #to enable us to create a new sq mile attribute
+library(viridis) #color blind friendly and scientific color schemes
+library(RColorBrewer) #color scales for mapping
+library(prettymapr)
+```
+
+1.  Use mySidewalk to select the attributes needed to construct the same set of indicators we used in the Hudson Valley example. Download the indicators used in our March 6 and 11 lab sessions and [*select three additional indicators available in mySidewalk*]{.underline}.
+
+    -   Search for and write down the relevant projected coordinate system for your city. You can use this tool to look up the crs code you will need here: <https://spatialreference.org/ref/epsg/>
+
+2\. Download, process, and map TRI facilities for your chosen area (you will download data from EPA for the state in which your city is situated). Summarize the TRI points by census tract in your area of interest.
+
+```{r}
+# Reading the Dallas City Tri Sites 
+DallasTri_df <- read_csv("DallasTri.CSV")
+DallasTri_Clean <- DallasTri_df %>% drop_na("PREF_LATITUDE", "PREF_LATITUDE") %>% mutate(longitude = -1*PREF_LONGITUDE)
+DallasTri_Clean
+# Creating a spatial dataset from the cleaned Dallas City Tri sites.
+DallasTri_sf <- st_as_sf(DallasTri_Clean, coords = c("longitude","PREF_LATITUDE"), crs = 4326)
+plot(DallasTri_sf)
+```
+
+```{r}
+# Setting Up my Dallas City dataset
+# This is the mysidewalk dataset 
+DallasCity <- geojson_sf("DallasCity.geojson")
+# renaming the columns
+DallasCityTracts <- DallasCity %>%      
+  rename(Median_Household_Income = `2018-2022__Median_Household_Income`, 
+         Total_Population = `2018-2022__Total_Population`, 
+         Hispanic_Race = `2018-2022__Race/Ethnicity_-_Hispanic`, 
+         Half_Mile_Food_Access = `2019__People_1/2_Mile_from_Access_to_Healthy_Food`, 
+         Unemployment_Rate = `2018-2022__Unemployment_Rate`, 
+         Black_NonHispanic_Race = `2018-2022__Race/Ethnicity_-_Black_(non-Hispanic)`,  
+         White_NonHispanic_Race = `2021__Proximity_to_Major_Direct_Water_Dischargers`, 
+         Children_Under_18 = `2018-2022__Population_Under_Age_18_(Children)`, 
+         Traffic_Proximity_and_Volume = `2021__Traffic_Proximity_and_Volume`)
+plot(DallasCity)
+```
+
+```{r}
+# Mutate to construct the indicators
+DallasCity_Indicators <- DallasCityTracts %>%     
+  mutate(
+    pct_Hispanic_Race = Hispanic_Race / Total_Population * 100,
+    pct_Half_Mile_Food_Access = Half_Mile_Food_Access / Total_Population * 100,
+    pct_Black_NonHispanic_Race = Black_NonHispanic_Race / Total_Population * 100,
+    pct_White_NonHispanic_Race = White_NonHispanic_Race / Total_Population * 100,
+    pct_Children_Under_18 = Children_Under_18 / Total_Population * 100
+  ) %>%
+  select(geoid, Total_Population, Median_Household_Income, Unemployment_Rate, Traffic_Proximity_and_Volume, 
+         pct_Hispanic_Race, pct_Half_Mile_Food_Access, pct_Black_NonHispanic_Race, pct_White_NonHispanic_Race, pct_Children_Under_18) %>%
+  mutate(across(where(is.numeric), round, digits = 1)) 
+```
+
+```{r}
+# Ensure both datasets use the same CRS (Coordinate Reference System)
+tri_sites <- st_transform(DallasTri_sf, st_crs(DallasCity))
+
+```
+
+```{r}
+tmap_mode("view") #to get a basemap, make an interactive tmap plot
+tm_shape(DallasCity) +
+  tm_polygons() +
+tm_shape(tri_sites) +
+  tm_dots("red")
+
+```
+
+TRI indicator 1: Summarize the number of TRI points per census tract
+
+```{r}
+# We are assigning the geoid to the tri sites based on the intersection they have
+# The first step in creating the count of tri sites by tracts, summarizing the numbner of tri sites in each neighborhoods (tracts)
+# In order to summarize we have to associate the tri sites with their tracts. As a result of this operation we get the geographic identifier with the tracts associated with each individual tri site. The result is a dataset by tri site. 
+tri_tract_summary <- st_join(tri_sites ,DallasCityTracts, join = st_within) 
+
+```
+
+```{r}
+# number of tri sites in each tract
+tri_tract_count <- count(as_tibble(tri_tract_summary), geoid)
+
+# we need to add that count to all the tracts that I downloaded from mysidewalk.
+tri_tract_sf <- left_join(DallasCity, tri_tract_count)
+```
+
+TRI indicator 2: Create an indicator of TRI per sq mile or sq kilometer in each tract
+
+```{r}
+#install.packages("units")
+library(units)
+
+tri_sq_mile <- tri_tract_sf %>% 
+  mutate(area = set_units(st_area(.), mi^2)) %>%  #create a new sq mile attribute
+  mutate(tri_sq_mi = as.numeric(n / area)) #create a tri per sq mile indicator
+data.frame(tri_sq_mile)
+plot(tri_sq_mile)
+```
+
+```{r}
+tri_sq_mile %>% 
+  ggplot() +
+  geom_sf(aes(fill = tri_sq_mi)) +
+  labs(x = NULL,
+       y = NULL,
+       title = "Dallas, TX",
+       subtitle = "Toxic Release Inventory Density",
+       caption = "Source: EPA TRI") +
+  scale_fill_viridis(name = "TRI per sq mile") +
+  annotation_scale(location = "bl", width_hint = 0.4) +
+  annotation_north_arrow(location = "br", which_north = "true", 
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"),
+        style = north_arrow_minimal) +
+    theme_minimal() 
+```
+
+Identify and download a point feature layer of what we might consider vulnerable institutions to compare with TRI site locations. For example, the location of K-12 schools, hospitals, libraries, places people spend time outside (parks, trails)
+
+```{r}
+#****OPTION 2: import a shapefile
+#*Reading the public school file
+k12_shp <- st_read("PublicSchools.shp")
+class(k12_shp)
+data.frame(k12_shp)
+
+tm_shape(k12_shp) +
+  tm_dots( col = "black") +
+tm_shape(tri_sites) +
+  tm_dots(col = "red")
+```
+
+Create a 1 mile and half mile buffer polygon around each point
+
+```{r}
+k12_buffer_halfmile <- st_buffer(k12_shp, 804.672)
+k12_buffer_mile <- st_buffer(k12_shp, 1609.34)
+```
+
+```{r}
+tm_shape(k12_shp) +
+  tm_dots( col = "black") +
+tm_shape(tri_sites) +
+  tm_dots(col = "red")+
+tm_shape(k12_buffer_halfmile) +
+  tm_borders( col = "green")
+
+
+
+```
+
+\
+
+```{r}
+# Check the CRS of tri_sites and k12_buffer_halfmile
+st_crs(tri_sites)
+st_crs(k12_buffer_halfmile)
+st_crs(k12_buffer_mile)
+
+# Transforming one of them to match the CRS of the other
+k12_buffer_halfmile <- st_transform(k12_buffer_halfmile, st_crs(tri_sites))
+k12_buffer_mile <- st_transform(k12_buffer_mile, st_crs(tri_sites))
+plot(k12_buffer_halfmile)
+```
+
+```{r}
+# buffers, tri site, k12 schools
+joined_tri_k12_onemile <- st_intersection(k12_buffer_mile, tri_sites)
+plot(joined_tri_k12_onemile)
+
+joined_tri_k12_halfmile <- st_intersection(k12_buffer_halfmile, tri_sites)
+plot(joined_tri_k12_halfmile)
+```
+
+```{r}
+# Now all I have to is to plot the maps one for half mile puffer. one for one mile buffer. one for black people to show who are the people how lives near these tri site, and then show their income to show if they are rich or poor. 
+# Half-mile buffer
+
+```
+
+### 2. Exploratory mapping and analysis
+
+Spatial analysis and mapping in R. Submit your Quarto doc, remove any code that does not demonstrate a necessary step to complete your mapping and analysis.
+
+Exploratory mapping
+
+1\. Create a thematic (choropleth, graduated colors) map of all of the Census tract indicators you downloaded from mySidewalk (note: you do not have to save these maps as a map layout).
+
+```{r}
+# Plotting the thematic map for Median Household Income
+tm_shape(DallasCity_Indicators) +
+  tm_polygons("Median_Household_Income", 
+              title = "Median Household Income", 
+              palette = "-RdYlBu", 
+              style = "quantile", 
+              n = 5) +
+  tm_layout(frame = FALSE, 
+            title = "Median Household Income by Census Tract")
+
+# I am just ploting this with correct dimensions. 
+# Plot the map using ggplot
+map_medianHouseholdIncome_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+  tm_polygons("Median_Household_Income",
+              title = "Median Household Income",
+              palette = "-RdYlBu",
+              style = "quantile",
+              n = 5) + 
+  tm_compass() +
+  tm_scale_bar(position = c("left", "bottom")) + 
+  tm_layout("Median Household Income in the Dallas City", compass.type = "arrow")
+map_medianHouseholdIncome_dallas_layout
+# Save the map with adjusted width and height
+tmap_save(map_medianHouseholdIncome_dallas_layout, filename = "Dallas_medianHouseholdIncome_with_layout.png", width = 15, height = 12)
+```
+
+1.  Create an interactive map of one of the indicators
+
+    ```{r}
+    # Interactive map for unemployment rate
+    tm_shape(DallasCity_Indicators) +
+      tm_polygons("Unemployment_Rate", 
+                  title = "Unemployment Rate", 
+                  palette = "-RdYlBu", 
+                  style = "quantile", 
+                  n = 5) +
+      tm_layout(frame = FALSE, 
+                title = "Unemployemnt Rate in Dallas")
+
+    tmap_mode("view")
+
+    # I am just ploting this with correct dimensions. 
+    # Plot the map using ggplot
+    map_unemployment_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+      tm_polygons("Unemployment_Rate",
+                  title = "Unemployment Rate",
+                  palette = "-RdYlBu",
+                  style = "quantile",
+                  n = 5) + 
+      tm_compass() +
+      tm_scale_bar(position = c("left", "bottom")) + 
+      tm_layout("Unemployment Rate in the Dallas City", compass.type = "arrow")
+    map_unemployment_dallas_layout
+    # Save the map with adjusted width and height
+    tmap_save(map_unemployment_dallas_layout, filename = "Dallas_unemployment_with_layout.png", width = 15, height = 12)
+
+    ```
+
+2.  Create a map to display the location of TRI sites in your chosen city. Note: you will need to clip the TRI sites to only those that are intersect with the tract layer for your chosen city. Hint: use the tract layer you created by downloading the .geojson from mySidewalk.
+
+    ```{r}
+    # a tmap visualization mode that is suitable for static plotting
+
+    # Create the map
+    tm_shape(DallasCityTracts) + 
+      tm_borders() + 
+      tm_shape(DallasTri_sf) + 
+      tm_dots(size = 0.2, col = "red", title = "TRI Sites") + 
+      tm_layout(title = "TRI Sites in Your City")
+    tmap_mode("plot")
+
+
+
+    ```
+
+3.  Create a map for each of the TRI tract indicators you created.
+
+    ```{r}
+    ggplot() +
+      annotation_map_tile("osm") + #add a basemap, yes it is a bit blurry
+      geom_sf(data = DallasCity_Indicators, alpha = 0, color = "black", size = 2) +
+      geom_sf(data = DallasTri_sf, size = 1, shape = 16, color = "red", fill = NA) 
+      labs(x = NULL,
+           y = NULL,
+           title = "Dallas City, TX",
+           subtitle = "Toxic Release Inventory",
+           caption = "Source: EPA") +
+      annotation_scale(location = "bl", width_hint = 0.4) +
+      annotation_north_arrow(location = "br", which_north = "true", 
+            pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"),
+            style = north_arrow_minimal) +
+      theme(axis.text.x = element_blank(), 
+            axis.text.y = element_blank(), 
+            axis.ticks = element_blank(),
+            rect = element_blank(), 
+            panel.grid = element_blank())
+
+    ggsave("tri_Dallas.png", width = 25, height = 15, units = "cm", bg = "white")
+    ```
+
+Create a map of K-12 schools (or other sensitive/vulnerable site for which you have point location data)
+
+```{r}
+ggplot() +
+  annotation_map_tile("osm") + #add a basemap, yes it is a bit blurry
+  geom_sf(data = DallasCity_Indicators, alpha = 0, color = "black", size = 2) +
+  geom_sf(data = k12_shp, size = 1, shape = 16, color = "red", fill = NA) 
+  labs(x = NULL,
+       y = NULL,
+       title = "Dallas City, TX",
+       subtitle = "K12 Public School",
+       caption = "Source: EPA") +
+  annotation_scale(location = "bl", width_hint = 0.4) +
+  annotation_north_arrow(location = "br", which_north = "true", 
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"),
+        style = north_arrow_minimal) +
+  theme(axis.text.x = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks = element_blank(),
+        rect = element_blank(), 
+        panel.grid = element_blank())
+
+ggsave("k12_Dallas.png", width = 25, height = 15, units = "cm", bg = "white")
+```
+
+Questions (submit brief responses in your Quarto doc)
+
+1.  Compare the the TRI per sq mile tract map with the tract indicators you compiled in mySidewalk. Are there are any indicators for which there is a relationship between the concentration of TRI facilities and that indicator?
+
+2.  Are there any TRI sites within 1 mile of a K-12 school (or other sensitive/vulnerable site for which you have point location data)?
+
+    1.  Count how many K-12 schools (or other sensitive/vulnerable site for which you have point location data) are within 1 mile of a TRI site?
+
+    2.  NOTE: if the 1-mile threshold is too large or too small to create a meaningful analysis, increase or decrease the buffer size so that it contains some, but not all TRI sites in the city.
+
+3.  How does the demographic profile of tracts with more TRI sites differ from those with fewer facilities? (Hint: create the tract data sets needed and then use the summarize function)
+
+4.  In brief responses, answer the following questions while conducting your analysis:
+
+    1.  Is there any relationship between the tract indicators from mySidewalk and the location of TRI facilities?
+
+    2.  Are their particular social groups that are more likely to reside near these facilities. For example: income, race, ethnicity, language, born outside the US.
+
+    3.  Which of your compiled indicators do you think helps to explain the location of TRI sites? What other indicators would help us better understand the impact of TRI facility placement? Why?
+
+5.  After completing questions #1-4 above:
+
+    -   Create a map of all of the K-12 schools (or other sensitive/vulnerable site for which you have point location data) within 1 mile of TRI sites
+    -   Create a map with these point features (in the preceding bullet point) and include a tract layer showing an indicator you found to be associated with a higher concentration of TRI facilities.
+
+## Doing what we did in March 6th and march 13th lab.
+
+Now I am setting up my data sets.
+
+1.  Select your area of interest: choose any U.S. city with over 500,000 people
+
+```{r}
+# I am reading the csv file of U.S cities with their population. 
+cities <- read_csv("us_places_by_pop.csv") 
+cities
+```
+
+Create a data frame with all where the total population is greater than 500,000:
+
+I am choosing Dallas City, Texas.
+
+GEOID: 4819000
+
+```{r}
+cities_over500k <- cities %>% 
+  filter(estimate > 500000) 
+cities_over500k
+
+```
+
+2.  Use mySidewalk to select the attributes needed to construct the same set of indicators we used in the Hudson Valley example. Download the indicators used in our March 6 and 11 lab sessions and [*select three additional indicators available in mySidewalk*]{.underline}.
+
+    -   Search for and write down the relevant projected coordinate system for your city. You can use this tool to look up the crs code you will need here: <https://spatialreference.org/ref/epsg/>
+
+```{r}
+# Mutate to construct the indicators
+DallasCity_Indicators <- DallasCityTracts %>%     
+  mutate(
+    pct_Hispanic_Race = Hispanic_Race / Total_Population * 100,
+    pct_Half_Mile_Food_Access = Half_Mile_Food_Access / Total_Population * 100,
+    pct_Black_NonHispanic_Race = Black_NonHispanic_Race / Total_Population * 100,
+    pct_White_NonHispanic_Race = White_NonHispanic_Race / Total_Population * 100,
+    pct_Children_Under_18 = Children_Under_18 / Total_Population * 100
+  ) %>%
+  select(geoid, Total_Population, Median_Household_Income, Unemployment_Rate, Traffic_Proximity_and_Volume, 
+         pct_Hispanic_Race, pct_Half_Mile_Food_Access, pct_Black_NonHispanic_Race, pct_White_NonHispanic_Race, pct_Children_Under_18) %>%
+  mutate(across(where(is.numeric), round, digits = 1)) 
+
+```
+
+### 3. Map layouts - Done
+
+Create four clear, well-formatted map layouts (as .png or .pdf) to display the results of your mapping and analysis work while completing this lab.
+
+Map 1 = Tri per square mile
+
+Map 2 = schools with in half mile of tri sites
+
+Map 3 = Percentage of children with in each tract
+
+Map 4 = Prercentage of hispanic with in each tract.
+
+Creating a map layout with tmap: adding north arrow and scale bar
+
+```{r}
+map_children_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+  tm_polygons("pct_Children_Under_18",
+              title = "Children",
+              palette = "RdYlBu",
+              style = "jenks") + 
+  tm_compass() +
+  tm_scale_bar(position = c("left", "bottom")) + 
+  tm_layout("Children in the Dallas City", compass.type = "arrow")
+map_children_dallas_layout
+
+# Save the map with adjusted width and height
+tmap_save(map_children_dallas_layout, filename = "Dallas_children_with_layout.png", width = 15, height = 12)
+```
+
+```{r}
+map_hispanic_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+  tm_polygons("pct_Hispanic_Race",
+              title = "Hispanic",
+              palette = "RdYlBu",
+              style = "jenks") + 
+  tm_compass() +
+  tm_scale_bar(position = c("left", "bottom")) + 
+  tm_layout("Hispanic Race in the Dallas City", compass.type = "arrow")
+map_hispanic_dallas_layout
+
+# Save the map with adjusted width and height
+tmap_save(map_hispanic_dallas_layout, filename = "Dallas_his_with_layout.png", width = 15, height = 12)
+```
+
+```{r}
+map_black_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+  tm_polygons("pct_Black_NonHispanic_Race",
+              title = "Non-Hispanic Black Race",
+              palette = "RdYlBu",
+              style = "jenks") + 
+  tm_compass() +
+  tm_scale_bar(position = c("left", "bottom")) + 
+  tm_layout("Non Hispanic Black in the Dallas City", compass.type = "arrow")
+map_black_dallas_layout
+
+# Save the map with adjusted width and height
+tmap_save(map_black_dallas_layout, filename = "Dallas_black_with_layout.png", width = 15, height = 12)
+```
+
+```{r}
+# Plot the map using ggplot
+map_white_dallas_layout <- tm_shape(DallasCity_Indicators) + 
+  tm_polygons("pct_White_NonHispanic_Race",
+              title = "Non-Hispanic White Race",
+              palette = "RdYlBu",
+              style = "jenks") + 
+  tm_compass() +
+  tm_scale_bar(position = c("left", "bottom")) + 
+  tm_layout("Non-Hispanic White in the Dallas City", compass.type = "arrow")
+
+# Save the map with adjusted width and height
+tmap_save(map_white_dallas_layout, filename = "Dallas_white_with_layout.png", width = 15, height = 12)
+
+```
+
+```{r}
+# tri site within half mile of k12 public schools
+# Plot the map using ggplot
+tri_halfmile_k12 <- ggplot() +
+  geom_sf(data = DallasCityTracts, color = "red", size = 1) +  # Plot all TRI sites
+  geom_sf(data = joined_tri_k12_halfmile, color = "black", size = 1) +  # Plot K-12 schools
+  labs(title = "TRI Sites within Half-Mile of K-12 Public Schools",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_halfmile_k12
+```
+
+```{r}
+ggsave("tri_halfmile_k12.png", width = 15, height = 12, units = "cm", bg = "white")
+```
+
+```{r}
+# Tri sies within one mile of k12 public schools 
+# Plot the map using ggplot
+tri_onemile_k12 <- ggplot() +
+  geom_sf(data = DallasCityTracts, color = "red", size = 1) +  # Plot all TRI sites
+  geom_sf(data = joined_tri_k12_onemile, color = "red", size = 1) +  # Plot K-12 schools
+  labs(title = "TRI Sites within One Mile of K-12 Public Schools",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_onemile_k12
+```
+
+```{r}
+ggsave("tri_onemile_k12.png", width = 15, height = 12, units = "cm", bg = "white")
+```
+
+```{r}
+# Tri sies within one mile of k12 public schools & Percentage of Children in each Tract
+# Plot the map using ggplot
+tri_onemile_k12_children <- ggplot() +
+  geom_sf(data = DallasCity_Indicators, aes(fill = pct_Children_Under_18) )+
+  geom_sf(data = joined_tri_k12_onemile, color = "red", size = 3) +  # Plot K-12 schools
+  labs(title = "TRI Sites within One Mile of K-12 Public Schools & Percentage of Children",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_onemile_k12_children
+```
+
+```{r}
+ggsave("tri_onemile_k12_children.png", width = 20, height = 15, units = "cm", bg = "white")
+```
+
+```{r}
+# Tri sies within one mile of k12 public schools & Percentage of Black People in each Tract
+# Plot the map using ggplot
+tri_onemile_k12_black <- ggplot() +
+  geom_sf(data = DallasCity_Indicators, aes(fill = pct_Black_NonHispanic_Race) )+
+  geom_sf(data = joined_tri_k12_onemile, color = "red", size = 3) +  # Plot K-12 schools
+  labs(title = "TRI Sites in 1 Mile of K-12 Public Schools & Percentage of Black People",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_onemile_k12_black
+```
+
+```{r}
+ggsave("tri_onemile_k12_black.png", width = 20, height = 15, units = "cm", bg = "white")
+```
+
+```{r}
+# Tri sies within one mile of k12 public schools & Percentage of White People in each Tract
+# Plot the map using ggplot
+tri_onemile_k12_White <- ggplot() +
+  geom_sf(data = DallasCity_Indicators, aes(fill = pct_White_NonHispanic_Race) )+
+  geom_sf(data = joined_tri_k12_onemile, color = "red", size = 3) +  # Plot K-12 schools
+  labs(title = "TRI Sites in 1 Mile of K-12 Public Schools & Percentage of White People",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_onemile_k12_White
+```
+
+```{r}
+ggsave("tri_onemile_k12_White.png", width =20, height = 15, units = "cm", bg = "white")
+```
+
+```{r}
+# Tri sies within one mile of k12 public schools & Percentage of Hispanic People in each Tract
+# Plot the map using ggplot
+tri_onemile_k12_hispanic <- ggplot() +
+  geom_sf(data = DallasCity_Indicators, aes(fill = pct_Hispanic_Race) )+
+  geom_sf(data = joined_tri_k12_onemile, color = "red", size = 3) +  # Plot K-12 schools
+  labs(title = "TRI Sites in 1 Mile of K-12 Public Schools & Percentage of Hispanic People",
+       subtitle = "Dallas City, TX") +
+  annotation_scale(location = "bl", width_hint = 0.4) +     #scale bar added in bottom left corner
+  annotation_north_arrow(location = "br", which_north = "true", #North arrow added in bottom right corner
+        pad_x = unit(0.0, "in"), pad_y = unit(0.2, "in"), #format arrow placement
+        style = north_arrow_minimal) +          #select north arrow style
+    theme_minimal()    #set overall map layout theme, blank white background
+tri_onemile_k12_hispanic
+```
+
+```{r}
+ggsave("tri_onemile_k12_hispanic.png", width = 20, height = 15, units = "cm", bg = "white")
+```
